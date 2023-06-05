@@ -1,16 +1,10 @@
 .include "m32def.inc"
 
-;~ .define mod1
-;~ .define mod2
-;~ .define mod3
-;~ .define mod4
-;~ .define mod5
-;~ .define mod6
-;~ .define NewRol
-;~ .define NewCopy
-.define ForTest
-;~ .define SLOWTEST
-
+.equ delx=0x2
+.equ length=48
+.equ length2=8
+.equ length3=64
+.equ repeat1=30
 
 .def temp1=r16
 .def temp2=r17
@@ -19,7 +13,7 @@
 .def temp5=r20
 .def temp6=r21
 .def temp7=r22
-; Scanline: Die 8-Bit-Linie zwischen 0 und 7, die gerade angezeigt wird im Interrupt
+; Scanline: which 8-bit-scanline is actually showed?
 .def scanline=r23	
 
 
@@ -35,7 +29,11 @@
 .def keysave=r8
 .def keyrepeat=r9
 
-.equ maxrepeat=4
+.def SubDelay=r10
+
+.def DelScan=r11
+
+.equ maxrepeat=30
 
 .equ Timer0Startwert=255-16
 
@@ -44,9 +42,9 @@
 .equ MidDelay=20
 .equ LongDelay=40
 
-; Geschwindigkeit Timer2
-; gestoppt:		0
-; kein Teiler:	1<<CS20
+; Speed Timer2
+; stopped:		0
+; no divider :	1<<CS20
 ; / 8 :			1<<CS21
 ; / 32 :		(1<<CS21) | (1<<CS20)
 ; / 64 :		1<CS22
@@ -55,14 +53,14 @@
 ; / 1024 :		(1<<CS22) | (1<<CS21) | (1<<CS20)
 
 .equ timer2aus=0
-.equ timer2an=(1<<CS21) ; geteilt durch 8
+.equ timer2an=(1<<CS21) ; divided by 8
 .equ MinIntense=1
-.equ MaxIntense=128
+.equ MaxIntense=32
 .equ StartIntense=MaxIntense
 
-; Geschwindigkeit Timer1
-; gestoppt:					0
-; kein Teiler:				1<<CS10
+; Speed Timer1
+; stopped :					0
+; no division :				1<<CS10
 ; / 8 :						1<<CS11
 ; / 64 :					(1<<CS11) | (1<<CS10)
 ; / 256 :					1<CS12
@@ -71,14 +69,9 @@
 ; ExtClk rising edge :		(1<<CS12) | (1<<CS11) | (1<<C10)
 
 .equ timer1aus=0
-.equ timer1an=(1<<CS11) | (1<<CS10) ; geteilt durch 64
-
-
-
-
-
-
-
+;~ .equ timer1an=(1<<CS11) | (1<<CS10) ; divided by 64
+;~ .equ timer1an=1<<CS11 ; divided by 8
+.equ timer1an=1<<CS12 ; divided by 256
 	
 	jmp RESET; Reset Handler
 	jmp EXT_INT0; IRQ0 Handler
@@ -127,39 +120,40 @@ SPM_RDY:	; Store Program Memory Ready Handler
 RESET:
 	; Set Stackpointer
 	cli
-	ldi temp1,high(RAMEND) ; Main program start
+	ldi temp1,high(RAMEND) ; End of RAM
 	out SPH,temp1
 	ldi temp1,low(RAMEND)
 	out SPL,temp1
 	; Statusregister, Enable Interrupts
 	ldi temp1,0x80
 	out SREG,temp1
-; Port-Initialisierung: Port A Ausggang, Port B Ausgang, Port C Ausgang
+; Init the ports, Port A Output, Port B output Bits 0-4, Port C Output Bits 0-5, Input Bits 6-7
 	ldi temp1,0xFF
 	out DDRA,temp1
 	ldi temp1,0x1F
 	out DDRB,temp1
 	ldi temp1,0x3F
 	out DDRC,temp1
-	ldi temp1,0xC0+0x3F
+	ldi temp1,0xC0
 	out PORTC,temp1
-; Timer-Initialisierung
-	; Timer 0 8 Bit normal, bei 4MHz und Prescaler /1024 -> ca. 3,9KHz, bei 16 Zyklen -> 250 Hz pro Scanline -> 31,25 HZ pro Screen 
 
-; Timer für Scannen	Timer0
+; Timer for Scanline-Timer Timer0
 ; Geschwindigkeit Timer2
-; gestoppt:					0
-; kein Teiler:				1<<CS00
+; stopped :					0
+; no division:				1<<CS00
 ; / 8 :						1<<CS01
 ; / 64 :					(1<<CS01) | (1<<CS00)
 ; / 256 :					1<<CS02
 ; / 1024 :					(1<<CS02) | (1<<CS00)
 ; extClk FallingEdge :		(1<<CS02) | (1<<CS01)
 ; extClk RisingEdge :		(1<<CS02) | (1<<CS01) | (1<<CS00)
-	ldi temp1, (1<<CS01) | (1<<CS00) ; Teiler 64
+;
+	ldi temp1, (1<<CS01) ; divided by 8
 	out TCCR0,temp1
 	ldi temp1,Timer0Startwert
 	out TCNT0,temp1
+	clr DelScan
+	inc DelScan
 	
 ; Timer für Helligkeit Timer2
 	; Timer 2 8 Bit Compare-Match und Overflow, 255 Bit, Prescaler /64 -> 250HZ PWM-Frequenz
@@ -179,53 +173,59 @@ RESET:
 	ldi temp2,0xFF
 	out TCNT1H,temp2
 	out TCNT1L,temp1
-	; Timer Interrupts aktivieren
+	; Activate the timer-interrupts
 	ldi temp1,1<<TOIE0 | 1<<OCIE2 | 1<<TOIE2 | 1<< TOIE1
 	out TIMSK,temp1
-	; Scanline auf 0 setzen
+	; Scanline to 0
 	ldi scanline,0x00
-	; Y-Register auf Speicheranfang setzen
+	; Set Y-reg to start of "video-RAM"
 	ldi XL,0x60
 	ldi XH,0x00
-	; Bildschirm löschen
 	ldi temp1,StartIntense
 	mov intense,temp1
 	out OCR2,intense
 	ldi temp2,0xC0
 	mov keysave,temp1
-;	ldi temp2,0x00
-;	call SetScreen
+; Set Subdelay to maximum possible
+	ldi temp1,0xFF
+	mov SubDelay,temp1
+; Enable Interrupts	
 	sei
 	nop
 	nop
 	nop
-	
+; Clear Screen
+	ldi temp2,0x00
+	call SetScreen
+; Loop-label, only used if added runprog terminates
 loop1:
-	ldi temp4,ShortDelay
-	ldi temp2,0
-	
-	ldi zh,high(pr_clearscreen*2)
-	ldi zl,low(pr_clearscreen*2)
-	call runprog
 
-	ldi zh,high(pr_fortest01*2)
-	ldi zl,low(pr_fortest01*2)
+	ldi ZL,low(2*pr_fortest01)
+	ldi ZH,high(2*pr_fortest01)
 	call runprog
-
 	rjmp loop1
 
-
-; Interrupt-Routine für Scanline-LED-Ansteuerung
+; Interrupt-Program for scanline-output
 TIM0_OVF:	; Timer0 Overflow Handler
-	cli
-	push temp1
+	cli						; Disable Interrupts
+	push temp1				; Push some Varaibles and some bits (SREG)
 	push temp2
 	IN temp1,SREG
-	PUSH temp1
-	; Scanline ausgeben
-; LEDS vorher löschen
+	push temp1
+; Delscan can be used for debugging, can slow down scanline-process. Just put DelScan to a high value
+; by using b.e.:
+;		ldi temp1,0x80
+;		mov DelScan,temp1
+; and disable the clr Delscan and inc Delscan
+	dec DelScan
+	brne t0con3
+	clr DelScan
+	inc DelScan
+; Output the acual scanline
+; Delete output for LED-anodes (Port A)
 	ldi temp1,0x00
 	out PORTA,temp1
+; Is scanline == 0 ? -> set cathode-scanbit1 (PortB=1) and scanbit2 (Port C=0) 
 	cpi scanline,0x00
 	brne t0con1
 	ldi temp1,0x01
@@ -234,6 +234,8 @@ TIM0_OVF:	; Timer0 Overflow Handler
 	mov scanbit2,temp1
 	rjmp t0con2
 t0con1:
+	; Scanline <>0
+	; Is scanline == 5 ? -> change the cathode-output from Port B to Port C
 	cpi scanline,0x05
 	brne t0con2
 	ldi temp1,0x00
@@ -241,6 +243,7 @@ t0con1:
 	ldi temp1,0x01
 	mov scanbit2,temp1
 t0con2:
+	; Output the Scanbits to Port B and Port C
 	mov temp1,scanbit1
 	ldi temp2,0x1F
 	eor temp1,temp2
@@ -248,93 +251,104 @@ t0con2:
 	mov temp1,scanbit2
 	ldi temp2,0x3F
 	eor temp1,temp2
+	; Set Bits 6 and 7 in Port C for pushbutton-input
 	ori temp1,0xC0
 	out PORTC,temp1
+	; Load the anode-output for this scanline
 	ld leds8,X+
-; LEDS anzeigen
+	; Output LEDS to PortA
 	out PORTA,leds8
-; Timer 2 setzen und starten
-	ldi temp1,0
-	out TCNT2,temp1
-	ldi temp1,Timer2An
-	out TCCR2,temp1
-;
+
+	; shift the scanbits by one bit left
+	clc
 	lsl scanbit1
+	clc
 	lsl scanbit2
+	; Next scanline
 	inc scanline
+	; Last scanline?
 	cpi scanline,0x0B
 	brne TIM0_Con1
+	; Reset to Scanline 0
 	ldi scanline,0x00
 	ldi XL,0x60
 	ldi XH,0x00
 TIM0_CON1:
+; Set Timer 2 and start it (for LED-brightness)
+	ldi temp1,0
+	out TCNT2,temp1
+	ldi temp1,Timer2An
+	out TCCR2,temp1
 	ldi temp1,Timer0Startwert
 	out TCNT0,temp1
+T0con3:
+	; Pop the varibales back from stack
 	pop temp1
 	out SREG,temp1
 	pop temp2
 	pop temp1
-	sei
+	sei										; Enable Interrups
 	reti
 
 
-; Interrupt-Routine für Helligkeits-Steuerung der LEDs
+; Interrupt-Programs for LED-brightness
 TIM2_OVF: 	; Timer2 Overflow Handler
-	cli
-	push temp1
-	; Timer 2 stoppen
+	cli										; Disable Interrups
+	push temp1								; Push some varaibles to Stack
+	; stop Timer 2
 	ldi temp1,Timer2Aus
 	out TCCR2,temp1
-	pop temp1
-	sei
+	pop temp1								; Pop some variables from stack
+	sei										; Enable Interrups
 	reti
 
 TIM2_COMP: 	; Timer2 Compare Handler
-	cli
-	push temp1
+	cli										; Disable Interrupts
+	push temp1								; Push some varaibles and bits (SREG) to stack
 	IN temp1,SREG
 	push temp1
-	; Timer 2 stoppen
+	; Stop Timer 2
 	ldi temp1,Timer2Aus
 	out TCCR2,temp1
-	; Timer 2 zurücksetzen
+	; Reset Timer 2
 	ldi temp1,0
 	out TCNT2,temp1
-	; LEDs löschen, wenn intense <>MaxIntense
+	; delete LEDs when intense <>MaxIntense
 	mov temp1,intense
 	cpi temp1,MaxIntense
 	breq tim2con
 	ldi temp1,0
 	out PORTA,temp1
 tim2con:	
-	pop temp1
+	pop temp1								; Pop some Variables and bits
 	out SREG,temp1
 	pop temp1
-	sei
+	sei										; Enable Interrupts
 	reti
 
-; Interrupt-Routine Timer 1: Tastenabfrage
+; Interrupt-Program Timer 1: Scan the Push-bittons
 TIM1_OVF:
-	cli
-	push temp1
+	cli										; Disable Interrupts
+	push temp1								; Push some variable and bits (SREG) to stack
 	push temp2
 	IN temp1,SREG
 	push temp1
-	call tastenabfrage
+	call tastenabfrage						; Call program to look for the buttons
 	ldi temp1,0x00
 	ldi temp2,0xFF
-	out TCNT1H,temp2
+	out TCNT1H,temp2						; Set the timer
 	out TCNT1L,temp1
-	pop temp1
+	pop temp1								; Pop some varaibles and bits
 	out SREG,temp1
 	pop temp2
 	pop temp1
-	sei
+	sei										; Enable interrupts
 	reti
 
-; temp2 enthält Bitfolge für alle LEDs
+; Some programs to control LEDs
+
+; temp2 is the look for each scanline, 0x00 is all out, 0xff is all on
 SetScreen:
-	; cli
 	push temp1
 	push YL
 	push YH
@@ -342,20 +356,15 @@ SetScreen:
 	ldi YH,0x00
 	ldi temp1,0x0B
 SeScLoop:
-	cli
-	nop
 	st y+,temp2
-	sei
-	nop
 	dec temp1
 	brne SeScLoop
 	pop YH
 	pop YL
 	pop temp1
-	;sei
 	ret
 	
-; temp2 enthält Bit-Adresse (0 bis 86), temp3 0 -> aus 1 -> an
+; temp2 is the led-adress (0 bis 83), temp3 == 0 -> LED off ; 1 -> LED on
 PixelChange:
 	cli
 	push temp1
@@ -383,17 +392,16 @@ PCLoop1:
 	lsl temp2
 	rjmp PCLoop1
 PCCon1:
-;	cli
 	nop
 	ld temp1,y
-;	sei
 	nop
 	cpi temp3,0x00
 	breq PCPixelAus
-;Pixel an
+;Pixel on
 	or temp1,temp2
 	rjmp PCCon2
 PCPixelAus:
+; Pixel off
 	com temp2
 	and temp1,temp2
 PCCon2:
@@ -412,15 +420,13 @@ PCCon2:
 	sei
 	ret
 
-; temp2 enthält LED-Adresse (0-83), ergebnis in temp1 0 oder >0
+; temp2 is LED-Addres (0-83), result in temp1
 PixelGet:
 	cli
 	push temp2
 	push temp3
 	push YL
 	push YH
-	;~ IN temp2,SREG
-	;~ push temp2
 	ldi YL,0x60
 	ldi YH,0x00
 	mov temp1,temp2
@@ -438,18 +444,14 @@ PGLoop1:
 	lsl temp2
 	rjmp PGLoop1
 PGCon1:
-	;~ cli
 	nop
 	ld temp1,y
-	;~ sei
 	nop
 	and temp1,temp2
 	cpi temp1,0
 	breq PGCon2
 	ldi temp1,1
 PGcon2:
-	;~ pop temp2
-	;~ out SREG,temp2
 	pop YH
 	pop YL
 	pop temp3
@@ -457,21 +459,86 @@ PGcon2:
 	sei
 	ret
 
+; RPGetVar1
+; get the variable, if value is 0xFx, X is Variable 0 to F
+; Put them in to temp5, 6, 4 and 3
 
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-; RUNPROG - Ausführen der Befehle laut LED-programm
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-;----------------------------------------------------------------------------------------------------------------------------------------------
-
-
-; ZH,ZL -> Zeiger auf Programm	
-RunProg:
+RPGetVar1:
+	cli
 	push temp1
+	push temp2
+	push YL
+	push YH
+	ldi YH,0
+	mov temp1,temp5
+	andi temp1,0xF0
+	cpi temp1,0xF0
+	brne rpgcon1
+
+	mov temp1,temp5
+	andi temp1,0x0F
+	ldi YL,0xC0
+	add yl,temp1
+	ld temp5,y
+
+rpgcon1:
+	mov temp1,temp6
+	andi temp1,0xF0
+	cpi temp1,0xF0
+	brne rpgcon2
+
+	mov temp1,temp6
+	ldi YL,0xC0
+	andi temp1,0x0F
+	add yl,temp1
+	ld temp6,y
+
+rpgcon2:
+	mov temp1,temp4
+	andi temp1,0xF0
+	cpi temp1,0xF0
+	brne rpgcon3
+
+	mov temp1,temp4
+	ldi YL,0xC0
+	andi temp1,0x0F
+	add yl,temp1
+	ld temp4,y
+	
+rpgcon3:
+	mov temp1,temp3
+	andi temp1,0xF0
+	cpi temp1,0xF0
+	brne rpgcon4
+
+	mov temp1,temp3
+	ldi YL,0xC0
+	andi temp1,0x0F
+	add yl,temp1
+	ld temp3,y
+
+rpgcon4:
+	pop YH
+	pop YL
+	pop temp2
+	pop temp1
+	sei
+	ret
+	
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+; RUNPROG - Start one program
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+;----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+; ZH,ZL -> Pointer to program in flash-memory	
+RunProg:
+	push temp1								; Push some variables to stack
 	push temp2
 	push temp3
 	push temp4
@@ -479,12 +546,13 @@ RunProg:
 	push temp6
 	push ZL
 	push ZH
-; Erstes Byte lesen, muss 0 sein
+; get first byte, needs to be Zero
 	lpm temp1,z+
 	cpi temp1,0x00
 	breq rpcon1
 rpcon2:
-	pop ZH
+	; End this program
+	pop ZH									; Pop some variables from stack
 	pop ZL
 	pop temp6
 	pop temp5
@@ -494,25 +562,27 @@ rpcon2:
 	pop temp1
 	ret
 rpcon1:
+	; get next Byte
 	lpm temp1,z+
-	; Ist 0xFF? Ende
+	; Stop program if byte 0xFF
 	cpi temp1,0xff
 	breq rpcon2
 	
 ; *********************************************************
-; Befehl 1: Mehrere LEDS setzen, Anzahl,Delay, An/Aus L_SETLED1
+; Opcode 1: Set some LEDS, by Count, Delay, on/off (L_SETLED1)
 ;**********************************************************
 
 	cpi temp1,L_SETLED1
 	brne rpcon3
 
 ; Lesen Anzahl, Delay, An/Aus
-	lpm temp5,z+ ; temp5 Anzahl
+; Read Count, Delay, On/off
+	lpm temp5,z+ ; temp5 Count
 	lpm temp4,z+ ; temp4 Delay
-	lpm temp3,z+ ; temp3 An/Aus
+	lpm temp3,z+ ; temp3 On/Off
 rploop1:
-	lpm temp2,z+ ; temp5 LED
-	; dec temp2
+	lpm temp2,z+ ; temp5 LED-number to change
+	dec temp2
 	call PixelChange
 	call Delay
 	dec temp5
@@ -525,19 +595,19 @@ rpcon3:
 ; ************************************************************************************************
 ; befehl 2: Zwischen Start und Ende setzen oder Löschen, Richtung Bit 8 an/Aus, mit Delay (1-84) L_SETLED2
 ; ************************************************************************************************
-
+; Start, Ende,Delay, An/Aus können durch Variablen ersetzt werden (0xFX)
 	cpi temp1,L_SETLED2
 	brne rpcon4
 
 ; Lesen Start, Ende, Delay, An/Aus
 	lpm temp5,z+ ; temp5 Start
-;	dec temp5
 	lpm temp6,z+ ; Temp6 Ende
-	dec temp6
 	lpm temp4,z+ ; temp4 Delay
 	lpm temp3,z+ ; temp3 anaus
+	call RpGetVar1
 	mov temp1,temp3
 	andi temp1,0x80
+	dec temp6
 	mov temp7,temp1
 	mov temp2,temp5
 	dec temp2
@@ -562,13 +632,18 @@ rpcon4:
 ;*************************************
 ; Befehl 3: LED setzen L_SETLED
 ; ************************************
+; Zu setzende LED und Wartezeit kann durch Variable ersetzt werden (0xFX)
 
 	cpi temp1,L_SETLED
 	brne rpcon7
 	
-	lpm temp2,z+
-	dec temp2
+	lpm temp5,z+
 	lpm temp4,z+
+	ldi temp6,0
+	ldi temp3,0
+	call RpGetVar1
+	mov temp2,temp5
+	dec temp2
 	ldi temp3,0x01
 	call PixelChange
 	call Delay
@@ -580,13 +655,18 @@ rpcon7:
 ; **********************************
 ; Befehl 4: LED löschen L_DELLED
 ;***********************************
+; Zu löschende LED und Wartezeit kann durch Variable ersetzt werden (0xFX)
 
 	cpi temp1,L_DELLED
 	brne rpcon8
 
-	lpm temp2,z+
-	dec temp2
+	lpm temp5,z+
 	lpm temp4,z+
+	ldi temp3,0
+	ldi temp6,0
+	call RpGetVar1
+	mov temp2,temp5
+	dec temp2
 	ldi temp3,0x00
 	call PixelChange
 	call Delay
@@ -602,6 +682,10 @@ rpcon8:
 	brne rpcon9
 
 	lpm temp4,z+
+	ldi temp5,0
+	ldi temp6,0
+	ldi temp3,0
+	call RpGetVar1
 	call Delay
 	rjmp rpcon1
 
@@ -610,16 +694,16 @@ rpcon9:
 ; *******************************************************************************************************
 ; Befehl 7: Zwischen Start Ende kurzfristig setzen oder löschen, mit Delay, An/Aus plus 80 für rückwärts L_SETLED4
 ; *******************************************************************************************************
+; Variablen möglich
 
 	cpi temp1,L_SETLED4
 	brne rpcon10
 
 	lpm temp5,z+
-;	dec temp5
 	lpm temp6,z+
-;	dec temp6
 	lpm temp4,z+
 	lpm temp3,z+
+	call RpGetVar1
 	mov temp1,temp3
 	andi temp1,0x80
 	mov temp7,temp1
@@ -675,18 +759,22 @@ rpcon13:
 ; Befehl 8: LEDS von/bis mehrfach an/Aus /Blinken L_BLINK1
 ; ************************************************************
 
-	ldi temp3,0x01
+	ldi temp2,0x01
 	cpi temp1,L_BLINK1
 	breq rpcon14_1
-	ldi temp3,0
-	cpi temp1,9
+
+	ldi temp2,0x00
+	cpi temp1,L_BLINK2
 	brne rpcon14
 	
 rpcon14_1:
 	lpm temp5,z+
 	lpm temp6,z+
 	lpm temp4,z+
-	lpm temp1,z+
+	lpm temp3,z+
+	call RpGetVar1
+	mov temp1,temp3
+	mov temp3,temp2
 	ldi temp7,0x01	
 rploop7:
 	mov temp2,temp5
@@ -926,11 +1014,10 @@ rpcon22:
 ; temp2 -> Variable; temp3 -> Wert
 	lpm temp2,z+
 	lpm temp3,z+
+	andi temp2,0x0F
 	ldi yl,0xC0
 	ldi yh,0
-	cpi temp2,10
-	brge rpcon26
-	; Variable 0 bis 9
+	; Variable 0 bis F
 	add yl,temp2
 	st y,temp3
 rpcon26:
@@ -950,8 +1037,7 @@ rpcon25:
 	lpm temp2,z+
 	ldi yl,0xC0
 	ldi yh,0
-	cpi temp3,10
-	brge rpcon28
+	andi temp3,0x0F
 	; Variable 0 bis 9
 	add yl,temp3
 	dec temp2 ; Variable 1-84 -> 0-83
@@ -980,8 +1066,7 @@ rpcon27:
 	; Variablenwert holen
 	ldi yl,0xC0			; y Basis setzen
 	ldi yh,0
-	cpi temp2,10		; temp2 im korrekten bereich?
-	brge rpcon30
+	andi temp2,0x0F		; temp2 im korrekten bereich?
 	; Variable 0 bis 9
 	add yl,temp2		; y auf Variable setzen
 	; temp3 zu setzender Wert aus Variable
@@ -1104,6 +1189,7 @@ rpcon37:
 	lpm temp6,z+
 	lpm temp3,z+
 	lpm temp4,z+
+	call RpGetVar1
 ; temp7 : Bit 1
 	ldi temp7,1 
 ; itemp1 : Sichere Anzahl (temp3)
@@ -1164,9 +1250,8 @@ rpcon39:
 	lpm temp3,z+
 	ldi yl,0xC0
 	ldi yh,0
-	cpi temp2,10
-	brge rpcon45
-	; Variable 0 bis 9
+	andi temp2,0x0F
+	; Variable 0 bis F
 	add yl,temp2
 	st y,temp3
 ; Adresse z auf Stack legen
@@ -1188,8 +1273,7 @@ rpcon44:
 	lpm temp2,z+
 	ldi yl,0xC0
 	ldi yh,0
-	cpi temp2,10
-	brge rpcon47
+	andi temp2,0x0F
 	; Variable 0 bis 9
 	add yl,temp2
 	ld temp3,y
@@ -1212,8 +1296,7 @@ rpcon46:
 	lpm temp2,z+
 	ldi yl,0xC0
 	ldi yh,0
-	cpi temp2,10
-	brge rpcon50
+	andi temp2,0x0F
 	; Variable 0 bis 9
 	add yl,temp2
 	ld temp3,y
@@ -1250,6 +1333,179 @@ rpcon48:
 	rjmp rpcon1
 
 rpcon52:
+
+; *******************************************************************************************************
+; Befehl 27:	Variable inkrementieren (um 1 erhöhen) 	L_INCVAR
+; *******************************************************************************************************
+
+	cpi temp1,L_INCVAR
+	brne rpcon53
+
+; temp2 -> Variable
+	lpm temp2,z+
+	ldi yl,0xC0
+	ldi yh,0
+	andi temp2,0x0F
+	; Variable 0 bis 9
+	add yl,temp2
+	ld temp3,y
+	inc temp3
+	st y,temp3
+rpcon54:
+	rjmp rpcon1
+
+rpcon53:
+
+; *******************************************************************************************************
+; Befehl 26:	Zwei variablen mit "+-*/ao<>" versehen 	L_VARMATH
+; *******************************************************************************************************
+
+	cpi temp1,L_VARMATH
+	brne rpcon55
+	; Variable1
+	lpm temp2,z+
+	andi temp2,0x0F
+	; variable2
+	lpm temp3,z+
+	andi temp3,0x0F
+	; Rechnenart
+	lpm temp4,z+
+	ldi yl,0xC0
+	ldi yh,0x00
+	add yl,temp2
+	; Inhalt Var1
+	ld temp5,y
+	ldi yl,0xC0
+	add yl,temp3
+	; Inhalt Var2
+	ld temp6,y
+	cpi temp4,'+'
+	brne rpcon56
+	add temp5,temp6
+	rjmp rpcon62
+rpcon56:
+	cpi temp4,'-'
+	brne rpcon57
+	sub temp5,temp6
+	rjmp rpcon62
+rpcon57:
+	cpi temp4,'*'
+	brne rpcon58
+	mul temp5,temp6
+	rjmp rpcon62
+rpcon58:
+	cpi temp4,'a'
+	brne rpcon59
+	and temp5,temp6
+	rjmp rpcon62
+rpcon59:
+	cpi temp4,'o'
+	brne rpcon60
+	or temp5,temp6
+	rjmp rpcon62
+rpcon60:
+	cpi temp4,'<'
+	brne rpcon61
+	rol temp5
+	rjmp rpcon62
+rpcon61:
+	cpi temp5,'>'
+	brne rpcon62
+	ror temp6
+rpcon62:
+	; Temp5 Ergebnis, temp2 Variable
+	ldi yl,0xC0
+	ldi yh,0x00
+	add yl,temp2
+	; Var1 speichern
+	st y,temp5
+	rjmp rpcon1
+
+rpcon55:	
+
+; *******************************************************************************************************
+; Befehl 32:	Variable, Wert, Abfrage - Next-Schleifen beenden, wenn Abfrage stimmt
+; *******************************************************************************************************
+
+	cpi temp1,L_NEXT3
+	brne rpcon63
+	lpm temp5,z+ ; Variable
+	lpm temp6,z+ ; Vergleichswert
+	lpm temp4,z+ ; Vergleich ( < > s g = n )
+	ldi yl,0xC0
+	ldi yh,0x00
+	andi temp5,0x0F
+	add yl,temp5
+	ld temp5,y	; temp1 ist Wert der Variablen
+	push temp5
+	push temp4
+	call RPGetVar1
+	pop temp4
+	pop temp5
+	; Welche Art von Vergleich?
+	cpi temp4,'=' ; Gleich
+	brne rpcon64
+	cp temp5,temp6
+	brne rpcon65
+	rjmp rpcon66
+rpcon64:
+	cpi temp4,'n' ; Ungleich
+	brne rpcon67
+	cp temp5,temp6
+	breq rpcon65
+	rjmp rpcon66
+rpcon67:
+	cpi temp4,'<' ; Kleiner
+	brne rpcon68
+	cp temp5,temp6
+	brge rpcon65
+	rjmp rpcon66
+rpcon68:
+	cpi temp4,'s' ; Kleiner gleich
+	brne rpcon69
+	cp temp6,temp5
+	brlt rpcon65
+	rjmp rpcon66
+rpcon69:
+	cpi temp4,'g' ; größer gleich
+	brne rpcon70
+	cp temp5,temp6
+	brge rpcon66
+	rjmp rpcon65
+rpcon70:
+	cpi temp4,'>'
+	brne rpcon66
+	cp temp6,temp5
+	brlt rpcon66
+	rjmp rpcon65
+rpcon65: ; Vergleich falsch, rücksprung
+	pop ZH
+	pop ZL
+	push ZL
+	push ZH
+	rjmp rpcon1
+rpcon66:
+	pop temp1
+	pop temp1
+	jmp rpcon1
+
+rpcon63:
+; *******************************************************************************************************
+; Befehl 33:	Subdelay für Wait-befehle anpassen
+; *******************************************************************************************************
+
+	cpi temp1,L_SUBDELAY
+	brne rpcon71
+	
+	lpm temp5,z+
+	ldi temp6,0
+	ldi temp3,0
+	ldi temp4,0
+	call RpGetVar1
+	mov SubDelay,temp5
+	rjmp rpcon1
+	
+rpcon71:
 	rjmp rpcon1
 
 
@@ -1268,7 +1524,7 @@ Delay:
 	cpi temp4,0x00
 	breq dlcon1
 dlloop1:
-	ldi temp3,0x10
+	mov temp3,SubDelay
 dlloop2:
 	ldi temp2,0xFF
 dlloop3:
@@ -1368,125 +1624,241 @@ tacon2:
 ; 01 	| Anzahl	| Warten	| An/Aus	|        	|	-> Mehrere LEDS setzen oder löschen, mit Wartezeit,
 ;		|			|			|			|			|		Wait, Anaus 0 aus, 1 setzen, es folgen 
 ;		|			|			|			|			|		Anzahl LEDs (1-84)
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED1=1
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 02 	| Start  	| Ende		| Warten  	| An/Aus 	| 	-> Zwischen Start und End setzen oder löschen,
 ;		|			|			|			|			|		Wartezeit Wait, Anaus 0 löschen, 1 setzen,
 ;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start,Ende, Warten, Anaus = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED2=2
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 03 	| LED    	| Warten	|       	|        	|   -> LED setzen
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: LED = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED=3
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 04 	| LED    	| Warten	|       	|        	|   -> LED löschen
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;
+;	Geplante Erweiterung: LED = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_DELLED=4
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 05 	| Warten   	|			|       	|        	|   -> Verzögerung Wait
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;
+;	Geplante Erweiterung: Warten = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_WAIT=5
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 06 	| Anzahl 	| Warten	| An/Aus	|        	|   -> Wie 01, aber kurzfristig gesetzt, gelöscht 
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED3=6
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 07 	| Start  	| Ende		| Warten  	| An/Aus 	|   -> Wie 02, aber kurzfristig an/aus bzw. aus/an
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED4=7
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 08 	| Start  	| Ende		| Warten   	| Count  	|   -> Die LEDs von Start bis end mehrfach an- und
 ;		|			|			|			|			|		ausschalten (Blinken), und zwar count-mal
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_BLINK1=8
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 09 	| Start  	| Ende		| Warten   	| Count  	|   -> Die LEDs von Start bis end mehrfach aus-
 ;		|			|			|			|			|		und anschalten (Blinken), und zwar count-mal
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9 *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_BLINK2=9
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 10 	| Anzahl 	| Warten	|        	|        	|	-> Wie 1, die LEDs werden getoggelt,
 ;		|			|			|			|			|		Anzahl LEDS folgen
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_TOGGLE1=10
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 11 	| Start  	| Ende		| Warten   	|        	|	-> Wie 2, aufwärts, die LEDs werden getoggelt,
 ;		|			|			|			|			|		Richtung nicht genutzt
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_TOGGLE2=11
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 12 	| Start  	| Ende		| Warten   	|  			|	-> Wie 2, abwärts. doe LEDs werden getoggelt,
 ;		|			|			|			|			|		Richtung nicht genutzt
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_TOGGLE3=12
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 13 	| Start  	| Ende		| 			|			|	-> Rollen von unten nach oben,
 ;		|			|			|			|			|		letztes wird in erstes gerollt 	
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_ROL=13
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 14	| Start		| Ende		|			|			|	-> Rollen von oben nach unten,
 ;		|			|			|			|			|		erstes wird in letztes gerollt
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start oder Ende = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_ROR=14
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 15	| Anzahl	| Warten	|			|			|	-> Setzen mehrerer LEDs, Folgen werden mit
 ;		|			|			|			|			|		LED+128 beendet, Folge bekommt Delay
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED5=15
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 16	| Anzahl	| Variable	| Warten	|			|	-> Rollen beliebiger LEDs, erste LED bekommt
 ;		|			|			|			|			|		Wert in Var, Wartezeit
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_ROLX=16
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 17	| Variable	| Wert		|			|			|	-> Variable mit Wert setzen 0->A, 1->B, 2->C, 3->D,
 ;		|			|			|			|			|		4->E, 5->F, 6->G, 7->H, 8->I, 9->J
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_VARSET=17
+
 ;----------------------------------------------------------------------------------------------------------------
-; 18	| Variable	| 			|			|			|	-> Variable =LED[Nr]
+; 18	| Variable	| Nr		|			|			|	-> Variable =LED[Nr]
 ;		|			|			|			|			|		(0 : gelöscht, 1: gesetzt)
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_LEDGET=18
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 19	| Start		| Ende		| Neu		| 			|	-> Es werden kopien der LEDS zwischen Start und Ende
 ;		|			|			|			|			|		erstellt, beginnend bei Neu.
 ;		|			|			|			|			|		Neu |0x80 -> rückwärts
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start, Endeoder Neu = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_LEDCOPY1=19
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 20	| Anzahl	| 			|			|			|	-> Es wird die erste LED je Paar in die zweite
 ;		|			|			|			|			|		kopiert, das nächste Paar eingelesen
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_LEDCOPY2=20
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 21	| Start		| Ende		| Anzahl	| Bitmaske	|	-> VOn start bis Ende werden immer Anzahl LEDS
 ;		|			|			|			|			|		gesetzt, laut den passenden Bits der Bitmaske,
 ;		|			|			|			|			|		 maixmal 8 LEDS als Anzahl
+;		|			|			|			|			|		Anaus plus 0x80 für rückwärts
+;	Geplante Erweiterung: Start, Ende, Anzahl oder Bitmaske = 0xF0 bis 0xF9 -> Nimm wie Variable 0 bis 9  *** erledigt ***
+;
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_SETLED6=21
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 22	| Variable	| Wert		|			|			|	-> Setze Schleifen-Rücksprungadresse für
 ;		|			|			|			|			|		"for-Schleife", Variable mit Wert setzen
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_FOR=22
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 23	| Variable	|			|			|			|	-> Decrement der Variable
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_DECVAR=23
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 24	| Variable	|			|			|			|	-> Rücksprung zur letzten for-Schleife, wenn
 ;		|			|			|			|			|		Variable <>0, ansonsten etfernen
 ;		|			|			|			|			|		der Rücksprung-Adressse
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_NEXT1=24
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 25	|			|			|			|			|	-> Rücksprung zur letzten for-Schleife, immer
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_NEXT2=25
-;----------------------------------------------------------------------------------------------------------------
 
+;----------------------------------------------------------------------------------------------------------------
+; 27	| Varaible	|			|			|			|	-> Increment der Variable
+;---------------------------------------------------------------------------------------------------------------- 
+.equ L_INCVAR=27
 
 ;----------------------------------------------------------------------------------------------------------------
 ; 26	| Variable1	| Variable1	| "+-*/ao<>"|			|	-> Variable1 = Variable1 "+-*/ao<>" Variable2
 ;		|			|			|			|			|		(Plus, Minus, Mal, Geteilt,
 ;		|			|			|			|			|		AND, OR, Shiftleft, Shiftright)
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_VARMATH=26
+
 ;----------------------------------------------------------------------------------------------------------------
-; 27	| Varaible	|			|			|			|	-> Increment der Variable
-.equ L_INCVAR=27
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 28	| Variable1	| Variable2	|			|			|	-> Variable1 = Variable2
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_MOVVAR=28
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 29	| Variable1	| Variable2	|			|			|	-> LED[Variable1]=Variable2
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_LEDVAR=29
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 30	| Variable1	| Variable2	|			|			|	-> Variable2 = LED[Variable1]
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_VARLED=30
+
 ;----------------------------------------------------------------------------------------------------------------
 ; 31	| Variable	| Wert		| "+-*/ao"	|			|	-> Variable wird "immediate" gerechnet mit Wert
 ;		|			|			|			|			|		(Plus, Minus, Mal, Geteilt,
 ;		|			|			|			|			|		AND OR)
+;---------------------------------------------------------------------------------------------------------------- 
 .equ L_VARIMATH=31
+;----------------------------------------------------------------------------------------------------------------
+
+;----------------------------------------------------------------------------------------------------------------
+; 32	| Variable	| Wert		| "<>gs="	|			|	-> Next-befehl für FOR-Schleife, die Variable wird
+;		|			|			|			|			|		geprüft, ob "<" Kleiner, ">" Größer,
+;		|			|			|			|			|		"s" Kleiner-Gleich, "g" Größer-Gleich, "=" gleich
+;		|			|			|			|			|		"n" ungleich
+;---------------------------------------------------------------------------------------------------------------- 
+.equ L_NEXT3=32
+;----------------------------------------------------------------------------------------------------------------
+
+;----------------------------------------------------------------------------------------------------------------
+; 33	| Wert		|	 		|	 		|			|	-> SubDelay mit Wert setzen
+;---------------------------------------------------------------------------------------------------------------- 
+.equ L_SUBDELAY=33
 ;----------------------------------------------------------------------------------------------------------------
 
 
@@ -1503,218 +1875,422 @@ tacon2:
 .equ L_I=8
 .equ L_J=9
 
-.equ delx=0x8
-.equ length=48
 
 pr_clearscreen:
-	.db 0,2,1,84,0,0,0xff,0
+	.db 0,L_SETLED2,1,84,0,0,0xff,0
 
 pr_setscreen:
-	.db 0,2,1,84,0,1,0xff,0
+	.db 0,L_SETLED2,1,84,0,1,0xff,0
+
+pr_fortest02:
+.db 0,L_FOR,9,1
+	.db 0,L_SETLED2,1,84,0,0
+	.db 0,L_FOR,0,84
+		.db 0,L_SETLED,0xF0,0
+		.db 0,L_WAIT,0x1,0
+		.db 0,L_DECVAR,0,0
+	.db 0,L_NEXT1,0,0
+.db 0,L_NEXT2
 
 pr_fortest01:
-	.db 0,L_FOR,2,1				; Schleife C (Wert egal)
 
-	.db 0,L_SETLED2,1,84,0,0			; Löschen Bildschirm
-	.db 0,L_SETLED6,1,24,6,0x01			; Setzen LEDs 1-24 mit 4 gesetzten, 2 gelöschten
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs
 
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_SETLED2,1,84,0,0			; Löschen Bildschirm
-	.db 0,L_SETLED6,1,24,6,0x03			; Setzen LEDs 1-24 mit 4 gesetzten, 2 gelöschten
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_SETLED2,1,84,0,0			; Löschen Bildschirm
-	.db 0,L_SETLED6,1,24,6,0x07			; Setzen LEDs 1-24 mit 4 gesetzten, 2 gelöschten
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_SETLED2,1,84,0,0			; Löschen Bildschirm
-	.db 0,L_SETLED6,1,24,6,0x0f			; Setzen LEDs 1-24 mit 4 gesetzten, 2 gelöschten
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_SETLED2,1,84,0,0			; Löschen Bildschirm
-	.db 0,L_SETLED6,1,24,6,0x1f			; Setzen LEDs 1-24 mit 4 gesetzten, 2 gelöschten
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROL,1,24				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,25,0		; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-	.db 0,L_FOR,1,length				; For-Schleife B=50
-
-	.db 0,L_WAIT,delx,0				; Wait 0x10
-	.db 0,L_ROR,24,1				; Rollen 1-24
-	.db 0,L_LEDCOPY1,1,24,48|128,0	; Kopieren der LEDs nach 25
-	.db 0,L_DECVAR,1,0				; Decrement B
-
-	.db 0,L_NEXT1,1,0				; BRNE For-B
-
-
-	.db 0,L_NEXT2					; Ewig-Schleifen-Ende
-	.db 0xff,0					; ENDE
+; Hauptschleife, ewig laufend
+.db 0,L_SETLED2,1,84,0,0
+.db 0,L_FOR,9,1				; Schleife C (Wert egal)
+; 	
+	.db 0,L_FOR,3,2	
+		.db 0,L_SETLED2,1,42,0,0 ; Löschen Rand
+		.db 0,L_SETLED,1,0
+		.db 0,L_SETLED,42,0
+		.db 0,L_WAIT,10,0
+		.db 0,L_SUBDELAY,20,0
+		.db 0,L_FOR,8,2
+			.db 0,L_VARSET,1,41
+			.db 0,L_FOR,0,21
+				.db 0,L_SETLED,0xF0,0
+				.db 0,L_SETLED,0xF1,0
+				.db 0,L_WAIT,1,0
+				.db 0,L_DELLED,0xF0,0
+				.db 0,L_DELLED,0xF1,0
+				.db 0,L_WAIT,1,0
+				.db 0,L_DECVAR,1,0
+				.db 0,L_DECVAR,0,0
+			.db 0,L_NEXT3,0,0xF8,"<",0
+			.db 0,L_INCVAR,0,0
+			.db 0,L_INCVAR,1,0
+			.db 0,L_SETLED,0xF0,0
+			.db 0,L_SETLED,0xF1,0
+			.db 0,L_INCVAR,8,0
+		.db 0,L_NEXT3,8,21,">",0
+		.db 0,L_SUBDELAY,0xE0,0
+		.db 0,L_WAIT,0xEF,0
+		.db 0,L_SUBDELAY,20,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_DECVAR,3,0
+	.db 0,L_NEXT1,3,0
+
+;
+	.db 0,L_SUBDELAY,0xFF,0
+	.db 0,L_WAIT,0xEF,0
+	.db 0,L_FOR,3,2	
+		.db 0,L_SETLED2,1,84,0,0 ; Löschen Rand
+		.db 0,L_WAIT,10,0
+		.db 0,L_SUBDELAY,2,0
+		.db 0,L_FOR,8,1
+			.db 0,L_FOR,0,84
+				.db 0,L_SETLED,0xF0,0
+				.db 0,L_WAIT,1,0
+				.db 0,L_DELLED,0xF0,0
+				.db 0,L_WAIT,1,0
+				.db 0,L_DECVAR,1,0
+				.db 0,L_DECVAR,0,0
+			.db 0,L_NEXT3,0,0xF8,"<",0
+			.db 0,L_INCVAR,0,0
+			.db 0,L_SETLED,0xF0,0
+			.db 0,L_INCVAR,8,0
+		.db 0,L_NEXT3,8,84,">",0
+		.db 0,L_SUBDELAY,40,0
+		.db 0,L_WAIT,0xEF,0
+		.db 0,L_SUBDELAY,20,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_TOGGLE2,43,84,1,0
+		.db 0,L_WAIT,0xEF,0
+		.db 0,L_DECVAR,3,0
+	.db 0,L_NEXT1,3,0
+
+;
+	.db 0,L_WAIT,0xEF,0
+	.db 0,L_SETLED2,1,84,1,0
+	.db 0,L_SUBDELAY,0X4,0
+	.db 0,L_WAIT,10,0
+	.db 0,L_FOR,0,20
+		.db 0,L_FOR,1,1
+			.db 0,L_SETLED,0xF1,0
+			.db 0,L_WAIT,10,0
+			.db 0,L_DELLED,0xF1,0
+			.db 0,L_INCVAR,1,0
+		.db 0,L_NEXT3,1,21,">",0
+		.db 0,L_FOR,1,42
+			.db 0,L_SETLED,0xF1,0
+			.db 0,L_WAIT,10,0
+			.db 0,L_DELLED,0xF1,0
+			.db 0,L_DECVAR,1,0
+		.db 0,L_NEXT3,1,22,"<",0
+		.db 0,L_DECVAR,0,0
+	.db 0,L_NEXT1,0,0
+
+;
+	.db 0,L_SUBDELAY,0X4,0
+	.db 0,L_WAIT,10,0
+	.db 0,L_FOR,1,1
+		.db 0,L_SETLED,0xF1,0
+		.db 0,L_WAIT,10,0
+		.db 0,L_INCVAR,1,0
+	.db 0,L_NEXT3,1,21,">",0
+	.db 0,L_FOR,1,42
+		.db 0,L_SETLED,0xF1,0
+		.db 0,L_WAIT,10,0
+		.db 0,L_DECVAR,1,0
+	.db 0,L_NEXT3,1,22,"<",0
+
+;
+	.db 0,L_SUBDELAY,0xEF,0
+	.db 0,L_BLINK1,43,84,20,2
+	.db 0,L_BLINK1,1,84,20,2
+
+;
+	.db 0,L_SUBDELAY,4,0
+	.db 0,L_SETLED2,1,84,0,0
+	.db 0,L_SETLED1,7,0,1,7,13,19,39,33,27,0
+	.db 0,L_SETLED,79,0
+	.db 0,L_FOR,2,1
+		.db 0,L_FOR,1,0xEF
+			.db 0,L_LEDGET,0,1,0,0
+			.db 0,L_ROLX,42,0,20,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,42,41,40,39,38,37,36,35,34,33,32,31,30,29,28,27,26,25,24,23,22,0
+			.db 0,L_VARSET,0,1
+			.db 0,L_ROLX,44,0,20,79,80,81,72,71,70,69,68,67,51,52,53,54,55,56,57,58,50,49,48,47,46,45,44,43,59,60,61,62,63,64,65,66,78,77,76,75,74,73,82,83,84,0
+			.db 0,L_DECVAR,1,0
+		.db 0,L_NEXT1,1,0
+		.db 0,L_WAIT,0xEF,0
+		.db 0,L_FOR,1,0xEF
+			.db 0,L_LEDGET,0,22,0,0
+			.db 0,L_ROLX,42,0,20,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0
+			.db 0,L_VARSET,0,0
+			.db 0,L_ROLX,44,0,20,84,83,82,73,74,75,76,77,78,66,65,64,63,62,61,60,59,43,44,45,46,47,48,49,50,58,57,56,55,54,53,52,51,67,68,69,70,71,72,81,80,79,0
+			.db 0,L_DECVAR,1,0
+		.db 0,L_NEXT1,1,0
+		.db 0,L_WAIT,0xEF,0
+		
+		.db 0,L_DECVAR,2,0
+	.db 0,L_NEXT1,2,0
+	
+	.db 0,L_WAIT,0x20,0
+
+;
+	.db 0,L_SUBDELAY,0x15,0
+	.db 0,L_FOR,0,12
+		.db 0,L_SETLED2,1,84,0,0
+		.db 0,L_WAIT,80,0
+		.db 0,L_SETLED,42,0,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_DELLED,42,0,0,0
+		.db 0,L_SETLED1,2,0,1,21,41,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,21,41,0
+		.db 0,L_SETLED1,3,0,1,20,50,40,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,20,50,40,0,0
+		.db 0,L_SETLED1,2,0,1,19,39,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,19,39,0
+		.db 0,L_SETLED1,3,0,1,18,49,38,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,18,49,38,0,0
+		.db 0,L_SETLED1,4,0,1,17,58,66,37,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,17,58,66,37,0
+		.db 0,L_SETLED1,5,0,1,16,57,48,65,36,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,16,57,48,65,36,0,0
+		.db 0,L_SETLED1,3,0,1,15,47,35,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,15,47,35,0,0
+		.db 0,L_SETLED1,4,0,1,72,56,64,78,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,72,56,64,78,0
+		.db 0,L_SETLED1,3,0,1,14,46,34,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,14,46,34,0,0
+		.db 0,L_SETLED1,6,0,1,13,71,55,63,77,33,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,6,0,0,13,71,55,63,77,33,0
+		.db 0,L_SETLED1,3,0,1,81,45,84,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,81,45,84,0,0
+		.db 0,L_SETLED1,6,0,1,12,70,54,62,76,32,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,6,0,0,12,70,54,62,76,32,0
+		.db 0,L_SETLED1,9,0,1,11,80,69,53,44,61,75,83,31,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,11,80,69,53,44,61,75,83,31,0,0
+		.db 0,L_SETLED1,9,0,1,10,79,68,52,43,60,74,82,30,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,10,79,68,52,43,60,74,82,30,0,0
+		.db 0,L_SETLED1,3,0,1,79,1,82,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,79,1,82,0,0
+		.db 0,L_SETLED1,8,0,1,9,67,51,2,22,59,73,29,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,8,0,0,9,67,51,2,22,59,73,29,0
+		.db 0,L_SETLED1,4,0,1,8,3,23,28,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,8,3,23,28,0
+		.db 0,L_SETLED1,4,0,1,7,4,24,27,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,7,4,24,27,0
+		.db 0,L_SETLED1,4,0,1,6,5,25,26,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,6,5,25,26,0
+		.db 0,L_SETLED1,4,0,1,6,5,25,26,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,6,5,25,26,0
+		.db 0,L_SETLED1,4,0,1,7,4,24,27,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,7,4,24,27,0
+		.db 0,L_SETLED1,4,0,1,8,3,23,28,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,8,3,23,28,0
+		.db 0,L_SETLED1,8,0,1,9,67,51,2,22,59,73,29,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,8,0,0,9,67,51,2,22,59,73,29,0
+		.db 0,L_SETLED1,3,0,1,79,1,82,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,79,1,82,0,0
+		.db 0,L_SETLED1,9,0,1,10,79,68,52,43,60,74,82,30,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,10,79,68,52,43,60,74,82,30,0,0
+		.db 0,L_SETLED1,9,0,1,11,80,69,53,44,61,75,83,31,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,11,80,69,53,44,61,75,83,31,0,0
+		.db 0,L_SETLED1,6,0,1,12,70,54,62,76,32,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,6,0,0,12,70,54,62,76,32,0
+		.db 0,L_SETLED1,3,0,1,81,45,84,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,81,45,84,0,0
+		.db 0,L_SETLED1,6,0,1,13,71,55,63,77,33,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,6,0,0,13,71,55,63,77,33,0
+		.db 0,L_SETLED1,3,0,1,14,46,34,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,14,46,34,0,0
+		.db 0,L_SETLED1,4,0,1,72,56,64,78,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,72,56,64,78,0
+		.db 0,L_SETLED1,3,0,1,15,47,35,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,15,47,35,0,0
+		.db 0,L_SETLED1,5,0,1,16,57,48,65,36,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,16,57,48,65,36,0,0
+		.db 0,L_SETLED1,4,0,1,17,58,66,37,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,4,0,0,17,58,66,37,0
+		.db 0,L_SETLED1,3,0,1,18,49,38,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,18,49,38,0,0
+		.db 0,L_SETLED1,2,0,1,19,39,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,19,39,0
+		.db 0,L_SETLED1,3,0,1,20,50,40,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,20,50,40,0,0
+		.db 0,L_SETLED1,2,0,1,21,41,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,21,41,0
+		.db 0,L_SETLED,42,0,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_DELLED,42,0,0,0
+		.db 0,L_DECVAR,0,0
+	.db 0,L_NEXT1,0,0
+	.db 0,L_FOR,0,12
+		.db 0,L_SETLED1,3,0,1,10,11,12,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,10,11,12,0,0
+		.db 0,L_SETLED1,2,0,1,9,13,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,9,13,0
+		.db 0,L_SETLED1,5,0,1,8,79,80,81,14,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,8,79,80,81,14,0,0
+		.db 0,L_SETLED1,2,0,1,7,15,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,7,15,0
+		.db 0,L_SETLED1,9,0,1,6,67,68,69,70,71,72,16,17,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,6,67,68,69,70,71,72,16,17,0,0
+		.db 0,L_SETLED1,2,0,1,5,18,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,5,18,0
+		.db 0,L_SETLED1,10,0,1,4,51,52,53,54,55,56,57,58,19,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,4,51,52,53,54,55,56,57,58,19,0
+		.db 0,L_SETLED1,2,0,1,3,20,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,3,20,0
+		.db 0,L_SETLED1,2,0,1,2,21,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,2,21,0
+		.db 0,L_SETLED1,10,0,1,1,43,44,45,46,47,48,49,50,42,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,1,43,44,45,46,47,48,49,50,42,0
+		.db 0,L_SETLED1,2,0,1,22,41,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,22,41,0
+		.db 0,L_SETLED1,2,0,1,23,40,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,23,40,0
+		.db 0,L_SETLED1,10,0,1,24,59,60,61,62,63,64,65,66,39,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,24,59,60,61,62,63,64,65,66,39,0
+		.db 0,L_SETLED1,2,0,1,25,38,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,25,38,0
+		.db 0,L_SETLED1,9,0,1,26,73,74,75,76,77,78,36,37,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,26,73,74,75,76,77,78,36,37,0,0
+		.db 0,L_SETLED1,2,0,1,27,35,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,27,35,0
+		.db 0,L_SETLED1,5,0,1,28,82,83,84,34,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,28,82,83,84,34,0,0
+		.db 0,L_SETLED1,2,0,1,29,33,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,29,33,0
+		.db 0,L_SETLED1,3,0,1,30,31,32,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,30,31,32,0,0
+		.db 0,L_SETLED1,3,0,1,30,31,32,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,30,31,32,0,0
+		.db 0,L_SETLED1,2,0,1,29,33,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,29,33,0
+		.db 0,L_SETLED1,5,0,1,28,82,83,84,34,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,28,82,83,84,34,0,0
+		.db 0,L_SETLED1,2,0,1,27,35,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,27,35,0
+		.db 0,L_SETLED1,9,0,1,26,73,74,75,76,77,78,36,37,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,26,73,74,75,76,77,78,36,37,0,0
+		.db 0,L_SETLED1,2,0,1,25,38,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,25,38,0
+		.db 0,L_SETLED1,10,0,1,24,59,60,61,62,63,64,65,66,39,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,24,59,60,61,62,63,64,65,66,39,0
+		.db 0,L_SETLED1,2,0,1,23,40,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,23,40,0
+		.db 0,L_SETLED1,2,0,1,22,41,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,22,41,0
+		.db 0,L_SETLED1,10,0,1,1,43,44,45,46,47,48,49,50,42,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,1,43,44,45,46,47,48,49,50,42,0
+		.db 0,L_SETLED1,2,0,1,2,21,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,2,21,0
+		.db 0,L_SETLED1,2,0,1,3,20,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,3,20,0
+		.db 0,L_SETLED1,10,0,1,4,51,52,53,54,55,56,57,58,19,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,10,0,0,4,51,52,53,54,55,56,57,58,19,0
+		.db 0,L_SETLED1,2,0,1,5,18,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,5,18,0
+		.db 0,L_SETLED1,9,0,1,6,67,68,69,70,71,72,16,17,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,9,0,0,6,67,68,69,70,71,72,16,17,0,0
+		.db 0,L_SETLED1,2,0,1,7,15,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,7,15,0
+		.db 0,L_SETLED1,5,0,1,8,79,80,81,14,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,5,0,0,8,79,80,81,14,0,0
+		.db 0,L_SETLED1,2,0,1,9,13,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,2,0,0,9,13,0
+		.db 0,L_SETLED1,3,0,1,10,11,12,0,0
+		.db 0,L_WAIT,4,0
+		.db 0,L_SETLED1,3,0,0,10,11,12,0,0
+		.db 0,L_DECVAR,0
+	.db 0,L_NEXT1,0,0
+	
+;
+.db 0,L_NEXT2						; Ewig-Schleifen-Ende
+.db 0xff,0							; ENDE
