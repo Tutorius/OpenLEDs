@@ -9,10 +9,8 @@ Port C bits 6 and 7 are used for two switches. They are used to select intensity
 Port D is ot used an can be used to drive more LEDs, as described above.
 
 The Colums are connected to Port B (bit 0 to 4) and Port C (Port 0 to 5)
-The processor is used with an 4MHz internal clock-generator.
+The processor is used with an 8MHz internal clock-generator.
+Caution: Disable the JTAG-Mode (by writing the fuse-flag) to be able to use all of Port-C.
 
-There is a sort of programming-language for creating own flashing-programs.
-The program is located in the program-flash, it may be moved to Data-RAM or more flexible things.
-Programs from 01 to 25 are realized, programs 26 to 30 is work in progress.
-
-Definition of programs is included in sourcetext.
+The internal LED-programming-language is almost finished. It has many modes of flashing light, 16 variables
+and ability to use for-loops for the creation of own lightng-gizmos.
