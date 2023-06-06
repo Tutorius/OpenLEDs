@@ -14,3 +14,11 @@ Caution: Disable the JTAG-Mode (by writing the fuse-flag) to be able to use all 
 
 The internal LED-programming-language is almost finished. It has many modes of flashing light, 16 variables
 and ability to use for-loops for the creation of own lightng-gizmos.
+
+The version here is created to drive a Heart-Gizmo with 84 LEDS. It has a big LED-program showing different lighting
+programs on the heart.
+
+The heart itself can be found at PCB-Way. You can order a PCB here.
+One Atmel AtMega32 DIP-Case 40 Pin, 8 resistors 300 Ohm, a USB_B-plug and two 5-pin-connectors are needed. You can add two pushbuttons, they are for dimming at the time.
+
+https://www.pcbway.com/project/shareproject/LED_Herz_LED_Heart_8a333d0c.html
